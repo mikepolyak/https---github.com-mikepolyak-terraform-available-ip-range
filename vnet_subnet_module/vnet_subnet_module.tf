@@ -42,17 +42,44 @@ locals {
     ]
   }
   
-  # Find the end of the last existing subnet
-  last_subnet_end = max([for subnet in local.ip_to_number.existing_subnets : subnet.end]...)
+  # Sort existing subnets
+  sorted_subnets = [
+    for subnet in sort([
+      for subnet in local.ip_to_number.existing_subnets : 
+      format("%020d", subnet.start)
+    ]) :
+    local.ip_to_number.existing_subnets[index(sort([
+      for s in local.ip_to_number.existing_subnets : 
+      format("%020d", s.start)
+    ]), subnet)]
+  ]
 
   # Calculate the size of the new subnet
   new_subnet_size = pow(2, 32 - var.new_subnet_prefix_length)
   
-  # Calculate the start of the next available subnet
-  next_subnet_start = local.last_subnet_end + 1
+  # Find gaps between subnets
+  subnet_gaps = concat(
+    [{ start = local.ip_to_number.vnet, end = local.sorted_subnets[0].start - 1 }],
+    [
+      for i in range(length(local.sorted_subnets) - 1) : {
+        start = local.sorted_subnets[i].end + 1
+        end = local.sorted_subnets[i+1].start - 1
+      }
+    ],
+    [{ 
+      start = local.sorted_subnets[length(local.sorted_subnets) - 1].end + 1,
+      end = local.ip_to_number.vnet + pow(2, 32 - local.vnet_prefix_length) - 1
+    }]
+  )
+
+  # Find the first gap that can accommodate the new subnet
+  next_subnet_start = [
+    for gap in local.subnet_gaps :
+    gap.start if gap.end - gap.start + 1 >= local.new_subnet_size
+  ][0]
 
   # Ensure the subnet start is aligned with the subnet size
-  aligned_subnet_start = ceil(local.next_subnet_start / local.new_subnet_size) * local.new_subnet_size
+  aligned_subnet_start = local.next_subnet_start + (local.new_subnet_size - local.next_subnet_start % local.new_subnet_size) % local.new_subnet_size
 
   # Calculate the subnet index
   subnet_index = (local.aligned_subnet_start - local.ip_to_number.vnet) / local.new_subnet_size
