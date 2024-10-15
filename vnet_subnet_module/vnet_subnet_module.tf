@@ -22,44 +22,43 @@ variable "new_subnet_prefix_length" {
 locals {
   vnet_prefix_length = tonumber(split("/", var.vnet_cidr)[1])
   
-  # Convert IP to number
-  ip_to_number = {
-    vnet = sum([
-      for i, v in split(".", split("/", var.vnet_cidr)[0]) :
-      tonumber(v) * pow(256, 3 - i)
-    ])
-    existing_subnets = [
-      for subnet_cidr in var.existing_subnets_cidr : {
-        start = sum([
-          for i, v in split(".", split("/", subnet_cidr)[0]) :
-          tonumber(v) * pow(256, 3 - i)
-        ])
-        end = sum([
-          for i, v in split(".", split("/", subnet_cidr)[0]) :
-          tonumber(v) * pow(256, 3 - i)
-        ]) + pow(2, 32 - tonumber(split("/", subnet_cidr)[1])) - 1
-      }
-    ]
-  }
-  
+  ip_to_number = sum([
+    for i, v in split(".", split("/", var.vnet_cidr)[0]) :
+    tonumber(v) * pow(256, 3 - i)
+  ])
+
+  existing_subnets = [
+    for subnet_cidr in var.existing_subnets_cidr : {
+      start = sum([
+        for i, v in split(".", split("/", subnet_cidr)[0]) :
+        tonumber(v) * pow(256, 3 - i)
+      ])
+      end = sum([
+        for i, v in split(".", split("/", subnet_cidr)[0]) :
+        tonumber(v) * pow(256, 3 - i)
+      ]) + pow(2, 32 - tonumber(split("/", subnet_cidr)[1])) - 1
+    }
+  ]
+
   # Sort existing subnets
   sorted_subnets = [
     for subnet in sort([
-      for subnet in local.ip_to_number.existing_subnets : 
-      format("%020d", subnet.start)
+      for subnet in local.existing_subnets : 
+      format("%020d-%020d", subnet.start, subnet.end)
     ]) :
-    local.ip_to_number.existing_subnets[index(sort([
-      for s in local.ip_to_number.existing_subnets : 
-      format("%020d", s.start)
-    ]), subnet)]
+    {
+      start = tonumber(split("-", subnet)[0])
+      end = tonumber(split("-", subnet)[1])
+    }
   ]
 
-  # Calculate the size of the new subnet
   new_subnet_size = pow(2, 32 - var.new_subnet_prefix_length)
-  
+
+  vnet_end = local.ip_to_number + pow(2, 32 - local.vnet_prefix_length) - 1
+
   # Find gaps between subnets
   subnet_gaps = concat(
-    [{ start = local.ip_to_number.vnet, end = local.sorted_subnets[0].start - 1 }],
+    [{ start = local.ip_to_number, end = local.sorted_subnets[0].start - 1 }],
     [
       for i in range(length(local.sorted_subnets) - 1) : {
         start = local.sorted_subnets[i].end + 1
@@ -68,7 +67,7 @@ locals {
     ],
     [{ 
       start = local.sorted_subnets[length(local.sorted_subnets) - 1].end + 1,
-      end = local.ip_to_number.vnet + pow(2, 32 - local.vnet_prefix_length) - 1
+      end = local.vnet_end
     }]
   )
 
@@ -78,22 +77,14 @@ locals {
     gap.start if gap.end - gap.start + 1 >= local.new_subnet_size
   ][0]
 
-  # Ensure the subnet start is aligned with the subnet size
-  aligned_subnet_start = local.next_subnet_start + (local.new_subnet_size - local.next_subnet_start % local.new_subnet_size) % local.new_subnet_size
-
-  # Calculate the subnet index
-  subnet_index = (local.aligned_subnet_start - local.ip_to_number.vnet) / local.new_subnet_size
-
-  # Calculate the next available subnet
   next_subnet = cidrsubnet(
     var.vnet_cidr,
     var.new_subnet_prefix_length - local.vnet_prefix_length,
-    floor(local.subnet_index)
+    (local.next_subnet_start - local.ip_to_number) / local.new_subnet_size
   )
 
-  # Generate IP addresses for the new subnet
   new_subnet_ip_list = [
-    for i in range(1, pow(2, 32 - var.new_subnet_prefix_length) - 1) :
+    for i in range(1, local.new_subnet_size - 1) :
     cidrhost(local.next_subnet, i)
   ]
 }
