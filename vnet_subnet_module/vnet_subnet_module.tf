@@ -15,79 +15,58 @@ variable "existing_subnets_cidr" {
 }
 
 variable "new_subnet_prefix_length" {
-  description = "The prefix length for the new subnet (e.g., 24 for a /24 subnet)"
+  description = "The prefix length for the new subnet (e.g., 25 for a /25 subnet)"
   type        = number
 }
 
 locals {
+  # Extract the prefix length from the vnet_cidr
   vnet_prefix_length = tonumber(split("/", var.vnet_cidr)[1])
-  
-  ip_to_number = sum([
-    for i, v in split(".", split("/", var.vnet_cidr)[0]) :
-    tonumber(v) * pow(256, 3 - i)
+
+  # Calculate the prefix length difference
+  prefix_length_diff = var.new_subnet_prefix_length - local.vnet_prefix_length
+
+  # Break up the range to avoid exceeding Terraform's limit
+  potential_subnets = flatten([
+    for i in range(0, min(pow(2, local.prefix_length_diff), 1024)) : [
+      cidrsubnet(var.vnet_cidr, local.prefix_length_diff, i)
+    ]
   ])
 
-  existing_subnets = [
-    for subnet_cidr in var.existing_subnets_cidr : {
-      start = sum([
-        for i, v in split(".", split("/", subnet_cidr)[0]) :
-        tonumber(v) * pow(256, 3 - i)
-      ])
-      end = sum([
-        for i, v in split(".", split("/", subnet_cidr)[0]) :
-        tonumber(v) * pow(256, 3 - i)
-      ]) + pow(2, 32 - tonumber(split("/", subnet_cidr)[1])) - 1
-    }
+  # Convert IP to number for overlap calculations for existing subnets only
+  ip_to_number = {
+    for ip in distinct(concat(
+      [for s in var.existing_subnets_cidr : cidrhost(s, 0)], # Start of existing subnets
+      [for s in var.existing_subnets_cidr : cidrhost(s, -1)] # End of existing subnets
+    )) :
+    ip => sum([for x in split(".", ip) : tonumber(x) * pow(256, 3 - index(split(".", ip), x))])
+  }
+
+  # Improved overlap check - no overlap with existing subnets
+  subnet_overlaps = [
+    for subnet in local.potential_subnets : [
+      for existing in var.existing_subnets_cidr :
+        (
+          local.ip_to_number[cidrhost(existing, 0)] <= sum([for x in split(".", cidrhost(subnet, -1)) : tonumber(x) * pow(256, 3 - index(split(".", cidrhost(subnet, -1)), x))]) &&
+          local.ip_to_number[cidrhost(existing, -1)] >= sum([for x in split(".", cidrhost(subnet, 0)) : tonumber(x) * pow(256, 3 - index(split(".", cidrhost(subnet, 0)), x))])
+        )
+    ]
   ]
 
-  # Sort existing subnets
-  sorted_subnets = [
-    for subnet in sort([
-      for subnet in local.existing_subnets : 
-      format("%020d-%020d", subnet.start, subnet.end)
-    ]) :
-    {
-      start = tonumber(split("-", subnet)[0])
-      end = tonumber(split("-", subnet)[1])
-    }
-  ]
-
-  new_subnet_size = pow(2, 32 - var.new_subnet_prefix_length)
-
-  vnet_end = local.ip_to_number + pow(2, 32 - local.vnet_prefix_length) - 1
-
-  # Find gaps between subnets
-  subnet_gaps = concat(
-    [{ start = local.ip_to_number, end = local.sorted_subnets[0].start - 1 }],
-    [
-      for i in range(length(local.sorted_subnets) - 1) : {
-        start = local.sorted_subnets[i].end + 1
-        end = local.sorted_subnets[i+1].start - 1
-      }
-    ],
-    [{ 
-      start = local.sorted_subnets[length(local.sorted_subnets) - 1].end + 1,
-      end = local.vnet_end
-    }]
-  )
-
-  # Find the first gap that can accommodate the new subnet
-  next_subnet_start = [
-    for gap in local.subnet_gaps :
-    gap.start if gap.end - gap.start + 1 >= local.new_subnet_size
+  # Find the next available subnet
+  next_subnet = [
+    for i, overlaps in local.subnet_overlaps :
+    local.potential_subnets[i] if !contains(overlaps, true) # Select only subnets with no overlap
   ][0]
 
-  next_subnet = cidrsubnet(
-    var.vnet_cidr,
-    var.new_subnet_prefix_length - local.vnet_prefix_length,
-    (local.next_subnet_start - local.ip_to_number) / local.new_subnet_size
-  )
-
+  # Generate IP addresses for the new subnet (excluding network and broadcast addresses)
   new_subnet_ip_list = [
-    for i in range(1, local.new_subnet_size - 1) :
+    for i in range(1, pow(2, 32 - var.new_subnet_prefix_length) - 1) :
     cidrhost(local.next_subnet, i)
   ]
 }
+
+# Outputs
 
 output "vnet_cidr" {
   description = "The CIDR block of the VNet"
