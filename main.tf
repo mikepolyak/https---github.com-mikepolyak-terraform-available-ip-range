@@ -1,7 +1,7 @@
 module "subnet_calculator" {
   source                  = "./vnet_subnet_module"
   vnet_cidr               = "10.0.0.0/16"
-  existing_subnets_cidr    = ["10.0.0.0/26", "10.0.0.192/26"]
+  existing_subnets_cidr   = ["10.0.0.0/26"]
   new_subnet_prefix_length = 25
 }
 

@@ -72,8 +72,11 @@ locals {
     gap.start if gap.end - gap.start + 1 >= local.new_subnet_size
   ][0]
 
+  # Ensure the subnet start is aligned with the subnet size
+  aligned_subnet_start = local.next_subnet_start + (local.new_subnet_size - (local.next_subnet_start % local.new_subnet_size)) % local.new_subnet_size
+
   # Calculate the subnet index
-  subnet_index = (local.next_subnet_start - local.ip_to_number.vnet) / local.new_subnet_size
+  subnet_index = (local.aligned_subnet_start - local.ip_to_number.vnet) / local.new_subnet_size
 
   # Calculate the next available subnet
   next_subnet = cidrsubnet(
@@ -83,10 +86,7 @@ locals {
   )
 
   # Generate IP addresses for the new subnet
-  new_subnet_ip_list = var.new_subnet_prefix_length == 31 ? [
-    cidrhost(local.next_subnet, 0),
-    cidrhost(local.next_subnet, 1)
-  ] : [
+  new_subnet_ip_list = [
     for i in range(1, pow(2, 32 - var.new_subnet_prefix_length) - 1) :
     cidrhost(local.next_subnet, i)
   ]
