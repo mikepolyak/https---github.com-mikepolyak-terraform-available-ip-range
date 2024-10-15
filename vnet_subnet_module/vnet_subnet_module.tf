@@ -35,17 +35,30 @@ locals {
     ])
   }
   
-  # Calculate the end of the existing subnet
-  existing_subnet_end = local.ip_to_number.existing_subnet + pow(2, 32 - local.existing_subnet_prefix_length) - 1
+  # Calculate the start and end of the existing subnet
+  existing_subnet_start = local.ip_to_number.existing_subnet
+  existing_subnet_end = local.existing_subnet_start + pow(2, 32 - local.existing_subnet_prefix_length) - 1
   
-  # Calculate the next available subnet start
-  next_subnet_start = local.ip_to_number.vnet + ceil((local.existing_subnet_end - local.ip_to_number.vnet + 1) / pow(2, 32 - var.new_subnet_prefix_length)) * pow(2, 32 - var.new_subnet_prefix_length)
+  # Calculate the size of the new subnet
+  new_subnet_size = pow(2, 32 - var.new_subnet_prefix_length)
+  
+  # Find the first available subnet
+  next_subnet_start = local.ip_to_number.vnet + floor((
+    local.existing_subnet_start - local.ip_to_number.vnet
+  ) / local.new_subnet_size) * local.new_subnet_size
+  
+  # If the calculated start overlaps with the existing subnet, move to the next available space
+  next_subnet_start_adjusted = local.next_subnet_start < local.existing_subnet_start ? (
+    local.next_subnet_start
+  ) : (
+    local.existing_subnet_end + 1 - (local.existing_subnet_end + 1) % local.new_subnet_size
+  )
   
   # Calculate the next available subnet
   next_subnet = cidrsubnet(
     var.vnet_cidr,
     var.new_subnet_prefix_length - local.vnet_prefix_length,
-    (local.next_subnet_start - local.ip_to_number.vnet) / pow(2, 32 - var.new_subnet_prefix_length)
+    (local.next_subnet_start_adjusted - local.ip_to_number.vnet) / local.new_subnet_size
   )
 
   # Generate IP addresses for the new subnet
