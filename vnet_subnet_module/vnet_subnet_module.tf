@@ -9,9 +9,9 @@ variable "vnet_cidr" {
   type        = string
 }
 
-variable "existing_subnet_cidr" {
-  description = "The CIDR block for an existing subnet (e.g., '10.0.0.0/24')"
-  type        = string
+variable "existing_subnets_cidr" {
+  description = "An array of CIDR blocks for existing subnets (e.g., ['10.0.0.0/24', '10.0.1.0/24'])"
+  type        = list(string)
 }
 
 variable "new_subnet_prefix_length" {
@@ -21,7 +21,6 @@ variable "new_subnet_prefix_length" {
 
 locals {
   vnet_prefix_length = tonumber(split("/", var.vnet_cidr)[1])
-  existing_subnet_prefix_length = tonumber(split("/", var.existing_subnet_cidr)[1])
   
   # Convert IP to number
   ip_to_number = {
@@ -29,36 +28,49 @@ locals {
       for i, v in split(".", split("/", var.vnet_cidr)[0]) :
       tonumber(v) * pow(256, 3 - i)
     ])
-    existing_subnet = sum([
-      for i, v in split(".", split("/", var.existing_subnet_cidr)[0]) :
-      tonumber(v) * pow(256, 3 - i)
-    ])
+    existing_subnets = [
+      for subnet_cidr in var.existing_subnets_cidr : {
+        start = sum([
+          for i, v in split(".", split("/", subnet_cidr)[0]) :
+          tonumber(v) * pow(256, 3 - i)
+        ])
+        end = sum([
+          for i, v in split(".", split("/", subnet_cidr)[0]) :
+          tonumber(v) * pow(256, 3 - i)
+        ]) + pow(2, 32 - tonumber(split("/", subnet_cidr)[1])) - 1
+      }
+    ]
   }
   
-  # Calculate the start and end of the existing subnet
-  existing_subnet_start = local.ip_to_number.existing_subnet
-  existing_subnet_end = local.existing_subnet_start + pow(2, 32 - local.existing_subnet_prefix_length) - 1
+  # Check for overlapping subnets
+  subnet_ranges = [
+    for subnet in local.ip_to_number.existing_subnets :
+    "${subnet.start}-${subnet.end}"
+  ]
   
+  unique_subnet_ranges = distinct(local.subnet_ranges)
+  
+  # Ensure no overlapping subnets
+  validate_no_overlap = length(local.subnet_ranges) == length(local.unique_subnet_ranges) ? true : tobool("Overlapping subnets detected")
+  
+  # Find the end of the last existing subnet
+  subnet_ends = [for subnet in local.ip_to_number.existing_subnets : subnet.end]
+  last_subnet_end = length(local.subnet_ends) > 0 ? max(local.subnet_ends...) : local.ip_to_number.vnet
+
   # Calculate the size of the new subnet
   new_subnet_size = pow(2, 32 - var.new_subnet_prefix_length)
   
-  # Find the first available subnet
-  next_subnet_start = local.ip_to_number.vnet + floor((
-    local.existing_subnet_start - local.ip_to_number.vnet
-  ) / local.new_subnet_size) * local.new_subnet_size
+  # Calculate the start of the next available subnet
+  next_subnet_start = local.last_subnet_end + 1
   
-  # If the calculated start overlaps with the existing subnet, move to the next available space
-  next_subnet_start_adjusted = local.next_subnet_start < local.existing_subnet_start ? (
-    local.next_subnet_start
-  ) : (
-    local.existing_subnet_end + 1 - (local.existing_subnet_end + 1) % local.new_subnet_size
-  )
+  # Ensure the next subnet start is aligned with the new subnet size
+  aligned_next_subnet_start = local.next_subnet_start + (local.new_subnet_size - local.next_subnet_start % local.new_subnet_size) % local.new_subnet_size
   
   # Calculate the next available subnet
   next_subnet = cidrsubnet(
     var.vnet_cidr,
     var.new_subnet_prefix_length - local.vnet_prefix_length,
-    (local.next_subnet_start_adjusted - local.ip_to_number.vnet) / local.new_subnet_size
+    (local.aligned_next_subnet_start - local.ip_to_number.vnet) / local.new_subnet_size
   )
 
   # Generate IP addresses for the new subnet
@@ -73,9 +85,9 @@ output "vnet_cidr" {
   value       = var.vnet_cidr
 }
 
-output "existing_subnet_cidr" {
-  description = "The CIDR block of the existing subnet"
-  value       = var.existing_subnet_cidr
+output "existing_subnets_cidr" {
+  description = "The CIDR blocks of the existing subnets"
+  value       = var.existing_subnets_cidr
 }
 
 output "next_available_subnet" {
