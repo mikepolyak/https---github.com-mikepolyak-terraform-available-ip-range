@@ -42,39 +42,51 @@ locals {
     ]
   }
   
-  # Check for overlapping subnets
-  subnet_ranges = [
+  # Sort existing subnets
+  sorted_subnets = sort([
     for subnet in local.ip_to_number.existing_subnets :
-    "${subnet.start}-${subnet.end}"
-  ]
-  
-  unique_subnet_ranges = distinct(local.subnet_ranges)
-  
-  # Ensure no overlapping subnets
-  validate_no_overlap = length(local.subnet_ranges) == length(local.unique_subnet_ranges) ? true : tobool("Overlapping subnets detected")
-  
-  # Find the end of the last existing subnet
-  subnet_ends = [for subnet in local.ip_to_number.existing_subnets : subnet.end]
-  last_subnet_end = length(local.subnet_ends) > 0 ? max(local.subnet_ends...) : local.ip_to_number.vnet
+    subnet.start
+  ])
 
   # Calculate the size of the new subnet
   new_subnet_size = pow(2, 32 - var.new_subnet_prefix_length)
   
-  # Calculate the start of the next available subnet
-  next_subnet_start = local.last_subnet_end + 1
-  
-  # Ensure the next subnet start is aligned with the new subnet size
-  aligned_next_subnet_start = local.next_subnet_start + (local.new_subnet_size - local.next_subnet_start % local.new_subnet_size) % local.new_subnet_size
-  
+  # Find gaps between subnets
+  subnet_gaps = concat(
+    [{ start = local.ip_to_number.vnet, end = local.sorted_subnets[0] - 1 }],
+    [
+      for i in range(length(local.sorted_subnets) - 1) : {
+        start = local.ip_to_number.existing_subnets[index(local.sorted_subnets, local.sorted_subnets[i])].end + 1
+        end = local.ip_to_number.existing_subnets[index(local.sorted_subnets, local.sorted_subnets[i+1])].start - 1
+      }
+    ],
+    [{ 
+      start = local.ip_to_number.existing_subnets[index(local.sorted_subnets, local.sorted_subnets[length(local.sorted_subnets) - 1])].end + 1,
+      end = local.ip_to_number.vnet + pow(2, 32 - local.vnet_prefix_length) - 1
+    }]
+  )
+
+  # Find the first gap that can accommodate the new subnet
+  next_subnet_start = [
+    for gap in local.subnet_gaps :
+    gap.start if gap.end - gap.start + 1 >= local.new_subnet_size
+  ][0]
+
+  # Calculate the subnet index
+  subnet_index = (local.next_subnet_start - local.ip_to_number.vnet) / local.new_subnet_size
+
   # Calculate the next available subnet
   next_subnet = cidrsubnet(
     var.vnet_cidr,
     var.new_subnet_prefix_length - local.vnet_prefix_length,
-    (local.aligned_next_subnet_start - local.ip_to_number.vnet) / local.new_subnet_size
+    floor(local.subnet_index)
   )
 
   # Generate IP addresses for the new subnet
-  new_subnet_ip_list = [
+  new_subnet_ip_list = var.new_subnet_prefix_length == 31 ? [
+    cidrhost(local.next_subnet, 0),
+    cidrhost(local.next_subnet, 1)
+  ] : [
     for i in range(1, pow(2, 32 - var.new_subnet_prefix_length) - 1) :
     cidrhost(local.next_subnet, i)
   ]
