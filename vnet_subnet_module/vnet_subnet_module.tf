@@ -23,24 +23,30 @@ locals {
   vnet_prefix_length = tonumber(split("/", var.vnet_cidr)[1])
   existing_subnet_prefix_length = tonumber(split("/", var.existing_subnet_cidr)[1])
   
-  # Calculate the existing subnet number within the VNet
-  vnet_decimal = [for octet in split(".", split("/", var.vnet_cidr)[0]): tonumber(octet)]
-  existing_subnet_decimal = [for octet in split(".", split("/", var.existing_subnet_cidr)[0]): tonumber(octet)]
-  existing_subnet_number = (
-    (local.existing_subnet_decimal[0] - local.vnet_decimal[0]) * pow(256, 3) +
-    (local.existing_subnet_decimal[1] - local.vnet_decimal[1]) * pow(256, 2) +
-    (local.existing_subnet_decimal[2] - local.vnet_decimal[2]) * 256 +
-    (local.existing_subnet_decimal[3] - local.vnet_decimal[3])
-  ) / pow(2, local.existing_subnet_prefix_length - local.vnet_prefix_length)
-
-  # Calculate the next available subnet number
-  next_subnet_number = local.existing_subnet_number + 1
+  # Convert IP to number
+  ip_to_number = {
+    vnet = sum([
+      for i, v in split(".", split("/", var.vnet_cidr)[0]) :
+      tonumber(v) * pow(256, 3 - i)
+    ])
+    existing_subnet = sum([
+      for i, v in split(".", split("/", var.existing_subnet_cidr)[0]) :
+      tonumber(v) * pow(256, 3 - i)
+    ])
+  }
   
-  # Ensure the next_subnet_number is within the valid range
-  max_subnet_number = pow(2, var.new_subnet_prefix_length - local.vnet_prefix_length) - 1
-  valid_next_subnet_number = min(local.next_subnet_number, local.max_subnet_number)
-
-  next_subnet = cidrsubnet(var.vnet_cidr, var.new_subnet_prefix_length - local.vnet_prefix_length, local.valid_next_subnet_number)
+  # Calculate the end of the existing subnet
+  existing_subnet_end = local.ip_to_number.existing_subnet + pow(2, 32 - local.existing_subnet_prefix_length) - 1
+  
+  # Calculate the next available subnet start
+  next_subnet_start = local.ip_to_number.vnet + ceil((local.existing_subnet_end - local.ip_to_number.vnet + 1) / pow(2, 32 - var.new_subnet_prefix_length)) * pow(2, 32 - var.new_subnet_prefix_length)
+  
+  # Calculate the next available subnet
+  next_subnet = cidrsubnet(
+    var.vnet_cidr,
+    var.new_subnet_prefix_length - local.vnet_prefix_length,
+    (local.next_subnet_start - local.ip_to_number.vnet) / pow(2, 32 - var.new_subnet_prefix_length)
+  )
 
   # Generate IP addresses for the new subnet
   new_subnet_ip_list = [
